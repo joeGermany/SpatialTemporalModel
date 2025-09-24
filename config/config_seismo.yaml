@@ -1,0 +1,15 @@
+dataset:
+  name: seismo
+  pair_id: 'all'
+model:
+  name: SpatialTemporalTrainer
+  k_neighbors: 5
+  n_temporal: 5
+  hidden_layers: 3
+  neurons: 128
+  activation: relu
+  dropout: 0.2
+  optimizer: adam
+  learning_rate: 0.001
+  epochs: 500
+  patience: 20
