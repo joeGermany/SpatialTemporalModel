@@ -5,8 +5,6 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_error
-import pickle
 
 class SpatialTemporalDataset(Dataset):
     """Dataset class for spatial-temporal prediction."""
@@ -43,24 +41,37 @@ class SpatialTemporalDataset(Dataset):
         features = np.concatenate([spatial_feat, temporal_feat])
         return torch.FloatTensor(features), torch.FloatTensor([target])
 
+
 class SpatialTemporalPredictor(nn.Module):
-    def __init__(self, input_dim, hidden_dims=[128, 64, 32], dropout_rate=0.2):
+    """Fully connected network for spatial-temporal prediction."""
+
+    def __init__(self, input_dim, hidden_dims, dropout_rate=0.2, activation="relu"):
         super().__init__()
-        layers, prev = [], input_dim
+        layers = []
+        prev_dim = input_dim
+
+        act_fn = nn.ReLU() if activation.lower() == "relu" else nn.Tanh()
+
         for h in hidden_dims:
-            layers += [nn.Linear(prev, h), nn.ReLU(), nn.Dropout(dropout_rate)]
-            prev = h
-        layers.append(nn.Linear(prev, 1))
+            layers.append(nn.Linear(prev_dim, h))
+            layers.append(act_fn)
+            layers.append(nn.Dropout(dropout_rate))
+            prev_dim = h
+
+        layers.append(nn.Linear(prev_dim, 1))
         self.network = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.network(x)
 
+
 class SpatialTemporalTrainer:
+    """Trainer for spatial-temporal model."""
+
     def __init__(self, pair_id, config, train_data, init_data=None, prediction_timesteps=None, delta_t=None):
         self.pair_id = pair_id
         self.config = config
-        self.train_data = np.array(train_data[0])  # shape (timesteps, sensors)
+        self.train_data = np.array(train_data[0])
         self.init_data = init_data
         self.prediction_timesteps = prediction_timesteps
         self.delta_t = delta_t
@@ -77,6 +88,7 @@ class SpatialTemporalTrainer:
         self._compute_neighbors()
         self._compute_spatial_features()
         self._prepare_datasets()
+        self.build_model()
 
     def _compute_neighbors(self):
         n_sensors = self.train_data.shape[1]
@@ -103,20 +115,25 @@ class SpatialTemporalTrainer:
                                                     self.n_temporal, self.k_neighbors)
         self.val_dataset = SpatialTemporalDataset(val_data, self.neighbor_dict, self.spatial_features,
                                                   self.n_temporal, self.k_neighbors)
+
+        # input dimension matches __getitem__
         k = self.k_neighbors
-        self.input_dim = k * 3 + self.n_temporal + k * (self.n_temporal + 1)
+        self.input_dim = self.k_neighbors*(self.n_temporal + 2) + self.n_temporal
 
     def build_model(self):
-        self.model = SpatialTemporalPredictor(self.input_dim,
-                                              hidden_dims=self.config['model'].get('hidden_dims', [128, 64, 32]),
-                                              dropout_rate=self.config['model'].get('dropout_rate', 0.2)).to(self.device)
+        hidden_layers = self.config['model'].get('hidden_layers', 3)
+        neurons = self.config['model'].get('neurons', 128)
+        hidden_dims = [neurons] * hidden_layers
+        self.model = SpatialTemporalPredictor(
+            input_dim=self.input_dim,
+            hidden_dims=hidden_dims,
+            dropout_rate=self.config['model'].get('dropout', 0.2)
+        ).to(self.device)
 
     def train(self):
-        if self.model is None:
-            self.build_model()
-        batch_size = self.config['training'].get('batch_size', 64)
-        lr = self.config['training'].get('learning_rate', 1e-3)
-        epochs = self.config['training'].get('epochs', 100)
+        batch_size = self.config['model'].get('batch_size', 64)
+        lr = self.config['model'].get('learning_rate', 1e-3)
+        epochs = self.config['model'].get('epochs', 100)
 
         train_loader = DataLoader(self.train_dataset, batch_size=batch_size, shuffle=True)
         val_loader = DataLoader(self.val_dataset, batch_size=batch_size, shuffle=False)
@@ -126,13 +143,18 @@ class SpatialTemporalTrainer:
 
         for epoch in range(epochs):
             self.model.train()
+            train_losses = []
             for X, y in train_loader:
                 X, y = X.to(self.device), y.to(self.device)
                 optimizer.zero_grad()
                 loss = criterion(self.model(X), y)
                 loss.backward()
                 optimizer.step()
+                train_losses.append(loss.item())
+            avg_train_loss = np.mean(train_losses)
+            print(f"Epoch {epoch+1}/{epochs} - Train Loss: {avg_train_loss:.6f}")
 
+        # validation loss
         self.model.eval()
         val_losses = []
         with torch.no_grad():
@@ -140,19 +162,16 @@ class SpatialTemporalTrainer:
                 X, y = X.to(self.device), y.to(self.device)
                 val_losses.append(criterion(self.model(X), y).item())
         self.val_loss = np.mean(val_losses)
+        print(f"Validation Loss: {self.val_loss:.6f}")
 
     def predict(self):
-        """
-        Rollout predictions for required horizon.
-        Returns array of shape (prediction_horizon_steps, n_sensors).
-        """
         horizon = len(self.prediction_timesteps) if self.prediction_timesteps is not None else self.train_data.shape[0]
         n_sensors = self.train_data.shape[1]
         preds = np.zeros((horizon, n_sensors))
 
         data = self.scaler.transform(self.train_data.T).T
-        # naive rollout: use last known window for each step
         window = data[-self.n_temporal:]
+
         for t in range(horizon):
             for i in range(n_sensors):
                 spatial_feat = self.spatial_features[i].flatten()

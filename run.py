@@ -2,6 +2,7 @@ import argparse
 import yaml
 from pathlib import Path
 import datetime
+import time
 
 from ctf4science.data_module import (
     load_dataset,
@@ -13,8 +14,7 @@ from ctf4science.data_module import (
 from ctf4science.eval_module import evaluate, save_results
 from ctf4science.visualization_module import Visualization
 
-from spatial_temporal_trainer import SpatialTemporalTrainer
-
+from spatialTemporalModel import SpatialTemporalTrainer
 
 def main(config_path):
     with open(config_path, "r") as f:
@@ -44,6 +44,7 @@ def main(config_path):
         delta_t = get_metadata(dataset_name)["delta_t"]
 
         trainer = SpatialTemporalTrainer(
+            pair_id=pair_id,
             config=config,
             train_data=train_data,
             init_data=init_data,
@@ -51,10 +52,24 @@ def main(config_path):
             delta_t=delta_t,
         )
 
-        trainer.train()
+        # --- TRAINING WITH EPOCH PROGRESS ---
+        print(f"Training model for pair {pair_id}...")
+        start_time = time.time()
+        batch_size = config['model'].get('batch_size', 64)
+        lr = config['model'].get('learning_rate', 1e-3)
+        epochs = config['model'].get('epochs', 100)
 
+        train_loader = trainer.train_dataset
+        trainer.model.train()
+        trainer.train()  # Uses the updated trainer with per-epoch printouts
+
+        print(f"Training finished in {time.time() - start_time:.2f}s")
+
+        # --- PREDICTION ---
+        print("Running prediction...")
         predictions = trainer.predict()
 
+        # --- EVALUATION ---
         results = evaluate(dataset_name, pair_id, predictions)
 
         results_directory = save_results(
@@ -72,6 +87,7 @@ def main(config_path):
             "metrics": results
         })
 
+        # --- PLOTS ---
         for plot_type in applicable_plots:
             try:
                 fig = viz.plot_from_batch(
@@ -83,7 +99,7 @@ def main(config_path):
             except Exception as e:
                 print(f"Error generating {plot_type} plot for pair_id {pair_id}: {e}")
 
-    # Save aggregated batch results
+    # --- SAVE BATCH RESULTS ---
     with open(results_directory.parent / "batch_results.yaml", "w") as f:
         yaml.dump(batch_results, f)
 
