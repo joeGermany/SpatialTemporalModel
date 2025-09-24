@@ -106,19 +106,24 @@ class SpatialTemporalTrainer:
                 self.spatial_features[i, j] = coords[i] - coords[nbr]
 
     def _prepare_datasets(self, train_ratio=0.8):
-        data_norm = self.scaler.fit_transform(self.train_data.T).T
+        # Scale along sensors (columns)
+        self.scaler = StandardScaler()
+        data_norm = self.scaler.fit_transform(self.train_data)  # shape: (timesteps, sensors)
+
         n_timesteps = data_norm.shape[0]
         train_size = int(n_timesteps * train_ratio)
         train_data, val_data = data_norm[:train_size], data_norm[train_size:]
 
+        # Prepare datasets
         self.train_dataset = SpatialTemporalDataset(train_data, self.neighbor_dict, self.spatial_features,
                                                     self.n_temporal, self.k_neighbors)
         self.val_dataset = SpatialTemporalDataset(val_data, self.neighbor_dict, self.spatial_features,
-                                                  self.n_temporal, self.k_neighbors)
+                                                self.n_temporal, self.k_neighbors)
 
-        # input dimension matches __getitem__
+        # Compute input dimension
         k = self.k_neighbors
-        self.input_dim = self.k_neighbors*(self.n_temporal + 2) + self.n_temporal
+        self.input_dim = self.spatial_features.shape[1] * self.spatial_features.shape[2] + \
+                        self.n_temporal + k * (self.n_temporal + 1)
 
     def build_model(self):
         hidden_layers = self.config['model'].get('hidden_layers', 3)
@@ -131,6 +136,9 @@ class SpatialTemporalTrainer:
         ).to(self.device)
 
     def train(self):
+        if self.model is None:
+            self.build_model()
+
         batch_size = self.config['model'].get('batch_size', 64)
         lr = self.config['model'].get('learning_rate', 1e-3)
         epochs = self.config['model'].get('epochs', 100)
@@ -141,9 +149,12 @@ class SpatialTemporalTrainer:
         criterion = nn.MSELoss()
         optimizer = optim.Adam(self.model.parameters(), lr=lr)
 
-        for epoch in range(epochs):
+        print(f"Training model for pair {self.pair_id} on device {self.device}...")
+
+        for epoch in range(1, epochs + 1):
             self.model.train()
             train_losses = []
+
             for X, y in train_loader:
                 X, y = X.to(self.device), y.to(self.device)
                 optimizer.zero_grad()
@@ -151,25 +162,42 @@ class SpatialTemporalTrainer:
                 loss.backward()
                 optimizer.step()
                 train_losses.append(loss.item())
-            avg_train_loss = np.mean(train_losses)
-            print(f"Epoch {epoch+1}/{epochs} - Train Loss: {avg_train_loss:.6f}")
 
-        # validation loss
-        self.model.eval()
-        val_losses = []
-        with torch.no_grad():
-            for X, y in val_loader:
-                X, y = X.to(self.device), y.to(self.device)
-                val_losses.append(criterion(self.model(X), y).item())
-        self.val_loss = np.mean(val_losses)
-        print(f"Validation Loss: {self.val_loss:.6f}")
+            avg_train_loss = np.mean(train_losses)
+
+            # Validation
+            self.model.eval()
+            val_losses = []
+            with torch.no_grad():
+                for X, y in val_loader:
+                    X, y = X.to(self.device), y.to(self.device)
+                    val_loss = criterion(self.model(X), y)
+                    val_losses.append(val_loss.item())
+            avg_val_loss = np.mean(val_losses)
+
+            print(f"Epoch {epoch}/{epochs} - Train Loss: {avg_train_loss:.6f} - Val Loss: {avg_val_loss:.6f}")
+
+            # Save checkpoint every 5 epochs
+            if epoch % 5 == 0:
+                checkpoint_path = f"model_pair{self.pair_id}_epoch{epoch}.pt"
+                torch.save(self.model.state_dict(), checkpoint_path)
+                print(f"Saved checkpoint: {checkpoint_path}")
+
+        self.val_loss = avg_val_loss
 
     def predict(self):
+        """
+        Rollout predictions for required horizon.
+        Returns array of shape (prediction_horizon_steps, n_sensors).
+        """
         horizon = len(self.prediction_timesteps) if self.prediction_timesteps is not None else self.train_data.shape[0]
         n_sensors = self.train_data.shape[1]
         preds = np.zeros((horizon, n_sensors))
 
-        data = self.scaler.transform(self.train_data.T).T
+        # Use scaled training data
+        data = self.scaler.transform(self.train_data)  # shape: (timesteps, sensors)
+
+        # naive rollout: use last known window for each step
         window = data[-self.n_temporal:]
 
         for t in range(horizon):
@@ -177,20 +205,29 @@ class SpatialTemporalTrainer:
                 spatial_feat = self.spatial_features[i].flatten()
                 neighbors = self.neighbor_dict[i]
                 temporal_feat = []
+
+                # Target sensor history
                 for lag in range(1, self.n_temporal + 1):
                     temporal_feat.append(window[-lag, i])
+
+                # Neighbors’ history
                 for nbr in neighbors:
                     for lag in range(self.n_temporal + 1):
                         temporal_feat.append(window[-lag, nbr])
+
                 feat = np.concatenate([spatial_feat, temporal_feat])
                 feat = torch.FloatTensor(feat).unsqueeze(0).to(self.device)
+
                 with torch.no_grad():
                     pred = self.model(feat).cpu().numpy().item()
+
                 preds[t, i] = pred
-            # update window
+
+            # Update window
             new_row = preds[t, :]
             window = np.vstack([window[1:], new_row])
 
-        # inverse transform
-        preds = self.scaler.inverse_transform(preds.T).T
+        # Inverse transform along sensors
+        preds = self.scaler.inverse_transform(preds)
+
         return preds
