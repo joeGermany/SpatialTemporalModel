@@ -5,6 +5,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
+from tqdm import tqdm
 
 class SpatialTemporalDataset(Dataset):
     """Dataset class for spatial-temporal prediction."""
@@ -200,7 +201,8 @@ class SpatialTemporalTrainer:
         # naive rollout: use last known window for each step
         window = data[-self.n_temporal:]
 
-        for t in range(horizon):
+        # Wrap timestep loop with tqdm for progress bar
+        for t in tqdm(range(horizon), desc="Predicting", ncols=100):
             for i in range(n_sensors):
                 spatial_feat = self.spatial_features[i].flatten()
                 neighbors = self.neighbor_dict[i]

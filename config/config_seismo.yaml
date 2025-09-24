@@ -13,4 +13,4 @@ model:
   learning_rate: 0.001
   epochs: 1
   patience: 20
-  batch_size: 10
+  batch_size: 64
