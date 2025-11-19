@@ -1,0 +1,44 @@
+dataset:
+  name: seismo
+  pair_id:
+  - 9
+model:
+  name: SpatialTemporalModel
+  train_split: 0.75   # float in (0.7 and 1.0)
+                     # proportion of train data to use for training
+  n_trials: 5
+
+hyperparameters: # Specify hyperparameters and ranges
+  k_neighbors:
+    type: choice
+    choices: [3, 5, 7, 10]
+  n_temporal:
+    type: choice
+    choices: [4, 5, 8, 10]
+  hidden_layers:
+    type: choice
+    choices: [2, 3, 4, 5]
+  neurons:
+    type: choice
+    choices: [32, 64, 128]
+  activation:
+    type: choice
+    choices: ['relu']
+  dropout:
+    type: choice
+    choices: [0.2]
+  optimizer:
+    type: choice
+    choices: ['adam']
+  learning_rate:
+    type: choice
+    choices: [0.001, 0.005, 0.01]
+  epochs:
+    type: choice
+    choices: [100, 250, 500]
+  patience:
+    type: choice
+    choices: [20]
+  batch_size:
+    type: choice
+    choices: [64, 128]
